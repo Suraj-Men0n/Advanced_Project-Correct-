@@ -1,0 +1,6 @@
+int32 id
+geometry_msgs/Point centroid
+string material_class
+float32 classification_confidence
+string surface_class
+float32 surface_classification_confidence

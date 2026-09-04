@@ -1,0 +1,25 @@
+# Core (tested in the authoring sandbox -- pure Python, no ROS2/PyBullet needed)
+numpy
+scipy
+opencv-python
+trimesh
+scikit-learn
+matplotlib
+pytest
+
+# Simulation + robotics (install on your ROS 2 + PyBullet machine; NOT testable
+# in a plain pip sandbox -- pybullet has no prebuilt wheel for many platforms
+# and must compile from source, which can take 10-20 minutes)
+# NOTE: pybullet_data is NOT a separate PyPI package -- it ships bundled
+# inside the `pybullet` distribution itself. `import pybullet_data` works
+# once pybullet is installed; do not list it here, pip's resolver will
+# fail the whole install trying to find a nonexistent package of that name.
+pybullet
+
+# Perception model training (install on your GPU machine)
+torch
+torchvision
+
+# ROS 2 Python deps (installed via your ROS 2 distro's apt packages, not pip:
+# ros-<distro>-rclpy, ros-<distro>-cv-bridge, ros-<distro>-sensor-msgs,
+# ros-<distro>-geometry-msgs -- see README for the full setup)

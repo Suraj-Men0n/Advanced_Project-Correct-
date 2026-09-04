@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tyre_sorting</name><version>0.2.0</version>
+  <description>ROS 2/PyBullet AI-enabled end-of-life tyre sorting.</description>
+  <maintainer email="student@example.com">MSc Robotics</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend><depend>sensor_msgs</depend><depend>geometry_msgs</depend><depend>std_msgs</depend><depend>cv_bridge</depend><depend>tyre_sorting_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,16 @@
+int32 id
+geometry_msgs/Point centroid
+int32 pixel_area
+int32 bbox_xmin
+int32 bbox_ymin
+int32 bbox_xmax
+int32 bbox_ymax
+string vision_surface_class
+float32 vision_surface_confidence
+string material_class
+string surface_class
+float32 classification_confidence
+float32 surface_classification_confidence
+float32 track_vx
+float32 track_vy
+float32 track_vz

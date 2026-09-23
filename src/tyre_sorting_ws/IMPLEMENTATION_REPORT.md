@@ -1,79 +1,80 @@
-# Tyre Sorting ROS 2 — bounding-box / surface / routing / motion correction
+# Tyre Sorting (ROS 2): Bounding Boxes, Surface Class, Routing and Motion Fixes
 
-## Verified conclusion
+## Summary
 
-The requested sorting specification is better with one important separation:
+The sorting spec mostly holds up, but it works better if a few things are kept separate.
 
-- **Bounding box:** every detected fragment gets a pixel bounding box `(xmin, ymin, xmax, ymax)`.
-- **Surface class:** `tread` or `sidewall` is a per-fragment attribute from perception.
-- **Tyre/material class:** `passenger`, `truck_hgv`, `motorcycle`, `otr_mining`.
-- **Final recycling route:** controlled by tyre/material class.
-- **Reject:** low-confidence material, unidentified surface, or out-of-spec fragments go to `bypass_reject`.
+Each detected fragment gets a pixel bounding box `(xmin, ymin, xmax, ymax)` and a surface class (`tread` or `sidewall`) from perception. It also gets a tyre/material class: `passenger`, `truck_hgv`, `motorcycle` or `otr_mining`. The recycling route is decided by the tyre/material class only. Anything with low-confidence material, an unidentified surface, or out-of-spec geometry goes to `bypass_reject`.
 
-Surface class is not used to invent a different recycling chemistry route. If tread and sidewall need physically different processing, that needs an explicit route/bin policy; otherwise it should remain a classification/selection/audit attribute.
+Surface class doesn't create its own recycling route. If tread and sidewall ever need different physical processing, that should be added as an explicit route/bin policy. Until then, surface class is used for classification, pick selection and the audit log.
 
-## What was actually wrong
+## Problems found
 
-1. `python -m tyre_sorting.sim.env sort` is a standalone PyBullet controller. It did **not** run the ROS 2 perception/routing chain.
-2. `PickPlaceController` selected a fragment near the pickup point, then **chased the fragment's current moving world position**. Because the belt moves +x, that target could leave the verified IK workspace while the arm was descending. This is consistent with the repeated `INTERCEPT_AND_PICK` watchdog timeouts.
-3. The `RANDOM` self-check sampled an overly broad workspace. It could produce a near-limit/IK-inconvenient pose even though the real fixed pickup/drop points were valid.
-4. Segmentation already computed a bbox internally, but the ROS `Fragment` message did not carry it, so bbox information was lost before fusion/routing.
-5. The CNN had a surface classification head, but the synthetic spectroscopy generator ignored `surface_class`. That made the surface head effectively chance-level.
-6. `routing_node.py` did not pass `surface_class` into `route_fragment()`.
-7. The simulator actuator previously sent all picked fragments to one `GOOD_BIN_DROP`.
+The `python -m tyre_sorting.sim.env sort` command runs a standalone PyBullet controller. It never touched the ROS 2 perception or routing nodes, so it wasn't testing the full chain.
 
-## Implemented corrections
+`PickPlaceController` picked a fragment near the pickup point and then kept following that fragment's live position. With the belt moving in +x, the target could drift out of the verified IK workspace while the arm was still descending, which explains the repeated `INTERCEPT_AND_PICK` watchdog timeouts.
 
-### Perception / bounding box
-- `Fragment.msg` now carries `bbox_xmin/ymin/xmax/ymax`.
-- Segmentation publishes each bbox.
-- Segmentation also publishes a lightweight vision/geometry surface prior (`tread` / `sidewall` / `unknown`) with confidence.
-- Fusion preserves bbox and combines the vision surface estimate with the spectral surface estimate.
+The `RANDOM` self-check sampled a workspace that was too broad. It sometimes produced poses near the joint limits, even though the actual fixed pickup and drop points were fine.
 
-### Spectroscopy / CNN
-- `synthesize_signature()` now accepts `surface_class` and adds a documented **synthetic** surface-dependent signal.
-- Dataset generation passes `surface_class` into spectroscopy.
-- `SpectralInference.predict()` now returns:
-  `(tyre_label, tyre_confidence, surface_label, surface_confidence)`.
-- The ROS spectral node publishes both tyre and surface predictions.
+Segmentation was already computing a bounding box, but the ROS `Fragment` message had no fields for it, so it was dropped before fusion and routing.
 
-This remains a co-simulation proxy. It is not measured laboratory spectroscopy and must not be presented as real material-ID evidence.
+The CNN has a surface classification head, but the synthetic spectroscopy generator ignored `surface_class`. The surface head was effectively guessing.
+
+`routing_node.py` wasn't passing `surface_class` into `route_fragment()`.
+
+In the simulator, every picked fragment was dropped into the same `GOOD_BIN_DROP`.
+
+## Changes
+
+### Perception and bounding boxes
+
+`Fragment.msg` now has `bbox_xmin`, `bbox_ymin`, `bbox_xmax` and `bbox_ymax`, and segmentation fills them in. Segmentation also publishes a simple vision/geometry surface estimate (`tread`, `sidewall` or `unknown`) with a confidence value. The fusion node keeps the bounding box and combines the vision surface estimate with the spectral one.
+
+### Spectroscopy and CNN
+
+`synthesize_signature()` now takes `surface_class` and adds a synthetic surface-dependent component to the signal, and dataset generation passes the surface class through. `SpectralInference.predict()` returns `(tyre_label, tyre_confidence, surface_label, surface_confidence)`, and the ROS spectral node publishes both predictions.
+
+Note that this is still a simulation proxy, not measured lab spectroscopy. It shouldn't be presented as evidence that real material identification works.
 
 ### Routing
-The routing map remains:
 
-- `otr_mining` -> `devulcanization_cbr`
-- `truck_hgv` -> `high_grade_crumb`
-- `passenger` -> `recompounding_raw_material`
-- `motorcycle` -> `speciality_crumb`
-- low-confidence / unknown -> `bypass_reject`
+The route map hasn't changed:
 
-A known surface class is now required for a fragment to be considered routable by the policy, and the routing log includes bbox + surface class.
+| Tyre class    | Route                        |
+|---------------|------------------------------|
+| `otr_mining`  | `devulcanization_cbr`        |
+| `truck_hgv`   | `high_grade_crumb`           |
+| `passenger`   | `recompounding_raw_material` |
+| `motorcycle`  | `speciality_crumb`           |
+| low confidence / unknown | `bypass_reject`   |
 
-### Robot movement
-The key motion correction is:
+A fragment now needs a known surface class to be routable, and the routing log records the bounding box and surface class.
 
-`HOME -> wait for a classified fragment inside pickup window -> mark target -> descend to the FIXED pickup point -> grasp only when the piece is physically inside the grasp radius -> lift vertically -> transit at safe Z -> descend -> release -> return HOME`
+### Arm motion
 
-The arm no longer chases a moving fragment's continuously changing x-coordinate during the pick step.
+The pick sequence is now:
 
-### Simulation bins
-The PyBullet environment now has four nearby route-specific recycling bins corresponding to the four tyre routes, plus the belt-exit reject tray.
+1. Start at HOME and wait for a classified fragment to enter the pickup window.
+2. Mark it as the target and descend to the fixed pickup point.
+3. Grasp only once the fragment is physically within the grasp radius.
+4. Lift straight up, move across at a safe Z height, descend over the bin and release.
+5. Return to HOME.
 
-For the **simulator actuator layer**, the physical drop route is currently obtained from the fragment's simulator metadata. The live ROS routing topic still publishes the real classification/routing decision, but stable cross-node track-ID wiring from `/routing/decision` back into the PyBullet body's route has not been fully connected.
+The arm no longer follows the fragment's changing x-position during the pick.
 
-## Validation performed here
+### Simulator bins
 
-- Python compilation: passed.
-- Dependency-light test suite: **14 passed**.
-- Retrained model using 320 metadata-labelled fragments.
-- Held-out test metrics:
-  - tyre-type accuracy: **97.9%**
-  - surface accuracy: **100%** on this synthetic dataset
+The PyBullet scene now has four recycling bins next to the belt, one per route, plus the reject tray at the belt exit.
 
-PyBullet is not installed in this execution environment, so the actual GUI/physics run was not executed here.
+At the moment the simulator picks the drop bin from the fragment's own simulator metadata. The ROS routing topic still publishes the real classification and routing decision, but the link from `/routing/decision` back to the matching PyBullet body (via a stable track ID across nodes) isn't finished yet.
 
-## Recommended validation on the Lenovo machine
+## Testing so far
+
+Python compilation passes and the dependency-light test suite passes (14 tests). The model was retrained on 320 metadata-labelled fragments. On the held-out set it scored 97.9% on tyre type and 100% on surface class, though the surface figure is on synthetic data and shouldn't be read as real-world performance.
+
+PyBullet wasn't installed in the environment these changes were tested in, so the GUI/physics run still needs to be done.
+
+## Checks to run on the Lenovo machine
 
 From the package source directory:
 
@@ -83,7 +84,7 @@ PYTHONPATH=src python3 -m tyre_sorting.sim.env check
 PYTHONPATH=src python3 -m tyre_sorting.sim.env sort
 ```
 
-For ROS 2:
+For the full ROS 2 system:
 
 ```bash
 colcon build --packages-select tyre_sorting_msgs
@@ -93,7 +94,7 @@ source install/setup.bash
 ros2 launch tyre_sorting full_system.launch.py
 ```
 
-Then inspect:
+Then check the topics:
 
 ```bash
 ros2 topic echo /perception/fragments
@@ -102,11 +103,16 @@ ros2 topic echo /routing/decision
 ros2 topic echo /arm/cartesian_velocity_cmd
 ```
 
-## Latest standalone-demo fixes
+## Latest fixes to the standalone demo
 
-- The standalone `sort` path now treats every spawned fragment as pickable; classification does not block the mechanical smoke test.
-- Once a fragment enters the fixed pickup window it is frozen on the conveyor, so the arm descends to one verified static pick point instead of chasing a moving target.
-- HOME no longer trips the 15 s watchdog while simply waiting for the next piece.
-- The active green collection bin opening was increased from 0.18 m to 0.44 m (inner half-width 0.22 m) and wall height increased to 0.12 m.
-- The standalone RGB camera frame now overlays segmentation bounding boxes and a surface label. The simulated conveyor plane depth is 0.85 m for the 0.9 m top-down camera and 0.05 m belt height; segmentation/launch defaults were aligned to 0.85 m.
-- The four route coordinates remain available for route-aware ROS2 operation; the standalone `sort` demo defaults to the common passenger/recompounding drop point so the mechanical cycle is easy to validate first.
+In `sort` mode every spawned fragment is treated as pickable, so classification doesn't get in the way of testing the mechanics.
+
+When a fragment enters the pickup window it's frozen on the belt, so the arm always goes to one verified, stationary pick point.
+
+The arm waiting at HOME for the next piece no longer triggers the 15 s watchdog.
+
+The green collection bin opening is now 0.44 m wide (was 0.18 m, so 0.22 m inner half-width) and the walls are 0.12 m high.
+
+The standalone RGB camera view now draws the segmentation bounding boxes and a surface label on each fragment. The camera sits 0.9 m above the scene and the belt surface is at 0.05 m, so the belt plane depth is 0.85 m. The segmentation and launch defaults have been updated to match.
+
+The four route bin coordinates are still there for running with ROS routing, but the standalone `sort` demo drops everything at the passenger/recompounding bin by default. That keeps the first test focused on getting the pick-and-place cycle working.
